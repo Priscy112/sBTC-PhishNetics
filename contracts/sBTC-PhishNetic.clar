@@ -208,3 +208,90 @@
                 verified_reports: (get verified_reports monitor_data)
             })
         (ok true)))
+
+(define-private (update-website-risk-score (website_url (string-ascii 255)) (risk_change int))
+    (begin 
+        (asserts! (is-ok (validate-website-identifier website_url)) ERR_MALFORMED_WEBSITE_ID)
+        (match (map-get? registered_secure_websites {website_url: website_url})
+            website_data 
+                (begin
+                    (map-set registered_secure_websites
+                        {website_url: website_url}
+                        (merge website_data {
+                            phishing_risk_score: (+ (get phishing_risk_score website_data) 
+                                (if (> risk_change 0) 
+                                    (to-uint risk_change)
+                                    u0))
+                        }))
+                    (ok true))
+            ERR_WEBSITE_NOT_FOUND)))
+
+(define-public (verify-phishing-report 
+    (website_url (string-ascii 255))
+    (is_verified bool))
+    (let (
+        (current_time (unwrap-panic (get-stacks-block-info? time (- stacks-block-height u1))))
+        (monitor_data (unwrap! (map-get? security_monitor_status {monitor_address: tx-sender}) ERR_UNAUTHORIZED_ACCESS)))
+
+        (asserts! (is-ok (validate-website-identifier website_url)) ERR_MALFORMED_WEBSITE_ID)
+        (asserts! (>= (get staked_tokens monitor_data) REQUIRED_COLLATERAL_AMOUNT) ERR_INSUFFICIENT_COLLATERAL)
+
+        (map-set security_monitor_status
+            {monitor_address: tx-sender}
+            (merge monitor_data {
+                completed_assessments: (+ (get completed_assessments monitor_data) u1),
+                last_active_date: current_time
+            }))
+        (if is_verified
+            (update-website-risk-score website_url 10)
+            (update-website-risk-score website_url -5))))
+
+(define-public (register-security-monitor (collateral_amount uint))
+    (let (
+        (current_time (unwrap-panic (get-stacks-block-info? time (- stacks-block-height u1)))))
+        (asserts! (>= collateral_amount REQUIRED_COLLATERAL_AMOUNT) ERR_INSUFFICIENT_COLLATERAL)
+        (asserts! (>= (stx-get-balance tx-sender) collateral_amount) ERR_INSUFFICIENT_COLLATERAL)
+
+        (map-set security_monitor_status
+            {monitor_address: tx-sender}
+            {
+                staked_tokens: collateral_amount,
+                completed_assessments: u0,
+                reputation_score: u100,
+                last_active_date: current_time,
+                activity_status: "active"
+            })
+        (unwrap! (stx-transfer? collateral_amount tx-sender (as-contract tx-sender))
+                 ERR_INSUFFICIENT_COLLATERAL)
+        (ok true)))
+
+;; System management functions
+(define-public (update-security-level (new_protection_level uint))
+    (begin
+        (asserts! (is-ok (validate-security-level new_protection_level)) ERR_INVALID_SECURITY_LEVEL)
+        (asserts! (is-eq tx-sender (var-get contract_owner)) ERR_UNAUTHORIZED_ACCESS)
+        (var-set global_security_level new_protection_level)
+        (ok true)))
+
+(define-public (set-emergency-pause (pause_state bool))
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract_owner)) ERR_UNAUTHORIZED_ACCESS)
+        (var-set contract_paused pause_state)
+        (ok true)))
+
+(define-public (transfer-contract-ownership (new_owner principal))
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract_owner)) ERR_UNAUTHORIZED_ACCESS)
+        (asserts! (not (is-eq new_owner 'SP000000000000000000002Q6VF78)) ERR_INVALID_ADMIN_ADDRESS)
+        (var-set contract_owner new_owner)
+        (ok true)))
+
+;; System initialization
+(define-public (initialize-contract (admin_address principal))
+    (begin
+        (asserts! (is-eq tx-sender (var-get contract_owner)) ERR_UNAUTHORIZED_ACCESS)
+        (asserts! (not (is-eq admin_address 'SP000000000000000000002Q6VF78)) ERR_INVALID_ADMIN_ADDRESS)
+        (var-set contract_owner admin_address)
+        (var-set global_security_level u1)
+        (var-set contract_paused false)
+        (ok true)))
